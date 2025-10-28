@@ -15,7 +15,9 @@
 <p align="center">
   🎯 <b>線上展示（Streamlit Demo）</b><br><br>
   <a href="https://mrt-sie-mosaic-steganography-system-c5imaur3ojmfhgkehjuvpr.streamlit.app/" target="_blank">
-    <img src="https://img.shields.io/badge/🚀%20Try%20Now%20on%20Str
+    <img src="https://img.shields.io/badge/🚀%20Try%20Now%20on%20Streamlit-blue?style=for-the-badge" alt="Streamlit Demo"/>
+  </a>
+</p>
 
 
 ---
