@@ -4,7 +4,8 @@ import numpy as np
 import cv2
 import json
 from pathlib import Path
-from stego_core import encrypt, save_stego_with_embedded_key, decrypt
+from stego_core import encrypt, save_stego_no_metadata, decrypt
+
 
 st.set_page_config(page_title="Mosaic Stego (M=4,N=4)", layout="wide")
 st.title("🧩 Mosaic + MRT-SIE（M=4, N=4 固定 / 種子自動 / 內嵌金鑰）")
