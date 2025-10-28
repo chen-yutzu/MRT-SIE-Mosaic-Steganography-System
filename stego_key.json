@@ -1,0 +1,8 @@
+{
+  "M": 4,
+  "N": 4,
+  "perm_seed": 13579,
+  "pixel_seed": 24680,
+  "shuffle": true,
+  "size": [512, 512]
+}
