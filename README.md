@@ -1,13 +1,15 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/你的GitHub帳號/你的repo名稱/main/assets/cover.png" width="520"/>
-  <br><br>
-  <b>MRT-SIE Mosaic Steganography System</b><br>
-  <i>Secure Image Hiding with Multi-Dimensional Reference Tensor and Scalable Index Encoding</i>
+  <br> 
+    <br>
+      <b>MRT-SIE Mosaic Steganography System</b>
+    <br>
+      <i>Secure Image Hiding with Multi-Dimensional Reference Tensor and Scalable Index Encoding</i>
+    <br>
+      <sub>台中科技大學 資訊工程系 專題製作</sub>
+    <br>
+    作者：陳宥慈、郭姿廷、黃薏俽、王孝淳　｜　指導教授：洪維恩
+    <br>
   <br>
-  <sub>台中科技大學 資訊工程系 專題製作</sub>
-  <br>
-  作者：陳宥慈、郭姿廷、黃薏俽、王孝淳　｜　指導教授：洪維恩
-  <br><br>
 </p>
 
 <p align="center">
