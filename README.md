@@ -1,23 +1,22 @@
 <p align="center">
-  <br> 
-    <br>
-      <b>MRT-SIE Mosaic Steganography System</b>
-    <br>
-      <i>Secure Image Hiding with Multi-Dimensional Reference Tensor and Scalable Index Encoding</i>
-    <br>
-      <sub>台中科技大學 資訊工程系 專題製作</sub>
-    <br>
-    作者：陳宥慈、郭姿廷、黃薏俽、王孝淳　｜　指導教授：洪維恩
-    <br>
   <br>
+  <b style="font-size:24px;">馬賽克拼貼式影像隱寫系統</b>
+  <br> 
+  <b>MRT-SIE Mosaic Steganography System</b>
+  <br>
+  <i>Secure Image Hiding with Multi-Dimensional Reference Tensor and Scalable Index Encoding</i>
+  <br>
+  <sub>台中科技大學 資訊工程系 專題製作</sub>
+  <br>
+  作者：陳宥慈、郭姿廷、黃薏俽、王孝淳　｜　指導教授：洪維恩
+  <br><br>
 </p>
 
 <p align="center">
   🎯 <b>線上展示（Streamlit Demo）</b><br><br>
   <a href="https://mrt-sie-mosaic-steganography-system-c5imaur3ojmfhgkehjuvpr.streamlit.app/" target="_blank">
-    <img src="https://img.shields.io/badge/🚀%20Try%20Now%20on%20Streamlit-blue?style=for-the-badge" alt="Streamlit Demo"/>
-  </a>
-</p>
+    <img src="https://img.shields.io/badge/🚀%20Try%20Now%20on%20Str
+
 
 ---
 
