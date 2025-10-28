@@ -182,16 +182,45 @@ def decode_ids(coords_stream: List[int], M: int, N: int, perm_seed: int, symbols
 # ---------- 封裝：加密 / 解密 ----------
 
 def encrypt(secret_bgr: np.ndarray, carrier_bgr: np.ndarray, tile_folder: str,
-            tile_size=(16,16),
+            tile_size=(16, 16),
             # 固定 M=4, N=4
             M=4, N=4,
             # 三個種子自動產生（None 時）
-            perm_seed: Optional[int]=None,
-            shuffle_pixels: bool=True,
-            pixel_seed: Optional[int]=None,
-            atlas_seed: Optional[int]=None,
-            keep_order: bool=False):
-    # 產生種子（64-bit）
+            perm_seed: Optional[int] = None,
+            shuffle_pixels: bool = True,
+            pixel_seed: Optional[int] = None,
+            atlas_seed: Optional[int] = None,
+            keep_order: bool = False):
+
+    # ---------- 容量檢查與自動縮放（不改載體、不改 tile_size） ----------
+    # 每符號需要 N 個像素；可嵌容量 = carrier_pixels // N
+    tw, th = tile_size
+    blocks = split_image_into_blocks(secret_bgr, tile_size)
+    rows, cols = blocks.shape[:2]
+    symbols = rows * cols
+    capacity = (carrier_bgr.shape[0] * carrier_bgr.shape[1]) // N
+
+    original_h, original_w = secret_bgr.shape[:2]
+
+    if symbols > capacity:
+        # 目標倍率（等比縮小 secret，使 symbols <= capacity）
+        ratio = np.sqrt(capacity / symbols)
+        new_w = max(tw, int(secret_bgr.shape[1] * ratio))
+        new_h = max(th, int(secret_bgr.shape[0] * ratio))
+        secret_bgr = cv2.resize(secret_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        # 重新分塊並保險：若仍超過容量，逐步再縮一點點直到符合
+        blocks = split_image_into_blocks(secret_bgr, tile_size)
+        rows, cols = blocks.shape[:2]
+        while (rows * cols) > capacity:
+            new_w = max(tw, int(new_w * 0.98))
+            new_h = max(th, int(new_h * 0.98))
+            secret_bgr = cv2.resize(secret_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            blocks = split_image_into_blocks(secret_bgr, tile_size)
+            rows, cols = blocks.shape[:2]
+        # print(f"[WARN] secret resized to {secret_bgr.shape[1]}x{secret_bgr.shape[0]} for capacity {capacity}")
+
+    # ---------- 種子（64-bit） ----------
     if perm_seed is None:
         perm_seed = secrets.randbits(64)
     if pixel_seed is None:
@@ -199,25 +228,26 @@ def encrypt(secret_bgr: np.ndarray, carrier_bgr: np.ndarray, tile_folder: str,
     if atlas_seed is None:
         atlas_seed = secrets.randbits(64)
 
-    # Atlas 與 KDTree
+    # ---------- Atlas / KDTree ----------
     atlas_bgr, tiles, a_rows, a_cols = build_atlas_from_folder(
         tile_folder, tile_size, seed=int(atlas_seed), keep_order=keep_order
     )
     tree = build_tile_feature_kdtree(tiles)
 
-    # 秘密圖 → 分塊 → 指派 tile
+    # ---------- 祕密圖 → Mosaic ----------
+    # （注意：上面可能已經把 blocks 準備好；這裡保險再做一次）
     blocks = split_image_into_blocks(secret_bgr, tile_size)
     idx_map = assign_tiles_to_blocks(blocks, tree, tiles)
     mosaic_bgr = render_mosaic(idx_map, tiles, tile_size)
     index_map_flat = idx_map.reshape(-1).tolist()
 
-    # MRT-SIE 嵌入
-    stego_bgr, coords_stream = embed_mrt_sie_to_y(
+    # ---------- 嵌入 ----------
+    stego_bgr, _ = embed_mrt_sie_to_y(
         index_map_flat, carrier_bgr, M, N, int(perm_seed),
         shuffle_pixels, int(pixel_seed)
     )
 
-    # Key：把 atlas 也塞進去（Base64）
+    # ---------- 打包金鑰（含 Atlas Base64） ----------
     ok, atlas_png_buf = cv2.imencode(".png", atlas_bgr)
     if not ok:
         raise RuntimeError("Atlas 轉 PNG 失敗")
@@ -229,12 +259,14 @@ def encrypt(secret_bgr: np.ndarray, carrier_bgr: np.ndarray, tile_folder: str,
         "perm_seed": int(perm_seed),
         "shuffle_pixels": True,
         "pixel_seed": int(pixel_seed),
-        "tile_size": list(tile_size),
+        "tile_size": [int(tw), int(th)],
         "mosaic_rows": int(idx_map.shape[0]),
         "mosaic_cols": int(idx_map.shape[1]),
         "symbols": len(index_map_flat),
         "coords_per_symbol": N,
         "index_map_len": len(index_map_flat),
+        "secret_size_before": [int(original_w), int(original_h)],
+        "secret_size_after": [int(secret_bgr.shape[1]), int(secret_bgr.shape[0])],
         "atlas": {
             "rows": int(a_rows),
             "cols": int(a_cols),
