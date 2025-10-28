@@ -3,10 +3,19 @@ import streamlit as st
 import numpy as np
 import cv2
 import json
+from pathlib import Path
 from stego_core import encrypt, save_stego_with_embedded_key, decrypt
 
 st.set_page_config(page_title="Mosaic Stego (M=4,N=4)", layout="wide")
 st.title("🧩 Mosaic + MRT-SIE（M=4, N=4 固定，種子自動產生）")
+
+# ---- 系統固定的素材路徑（專案相對） ----
+TILES_DIR = (Path(__file__).parent / "assets" / "tiles_256").as_posix()
+
+# 顯示唯讀資訊，方便檢查部署是否抓到正確路徑
+with st.sidebar:
+    st.markdown("### 系統設定（唯讀）")
+    st.code(f"TILES_DIR = {TILES_DIR}")
 
 tab_enc, tab_dec = st.tabs(["🔐 加密 / Embed", "🔓 解密 / Decode"])
 
@@ -21,18 +30,32 @@ with tab_enc:
     c1, c2 = st.columns(2)
     tile_w = c1.number_input("Tile 寬", 4, 256, 16, step=4)
     tile_h = c2.number_input("Tile 高", 4, 256, 16, step=4)
-    tiles_dir = st.text_input("素材方塊資料夾", value="assets/tiles_256")
+
+    # 檢查素材資料夾存在
+    if not Path(TILES_DIR).exists():
+        st.error(f"找不到素材資料夾：{TILES_DIR}\n請確認專案內有 assets/tiles_256。")
+    else:
+        # 小提示：顯示目前素材張數
+        from os import listdir
+        try:
+            n_tiles = len([p for p in listdir(TILES_DIR)
+                           if Path(p).suffix.lower() in {'.png','.jpg','.jpeg','.bmp','.tiff','.tif'}])
+            st.caption(f"素材庫：{TILES_DIR}（偵測到 {n_tiles} 張方塊）")
+        except Exception:
+            st.caption(f"素材庫：{TILES_DIR}")
 
     if st.button("開始加密 ▶", type="primary", use_container_width=True):
         if (secret is None) or (carrier is None):
             st.error("請同時上傳「祕密圖」與「載體圖」。")
+        elif not Path(TILES_DIR).exists():
+            st.error(f"素材庫不存在：{TILES_DIR}")
         else:
             try:
                 secret_bgr  = cv2.imdecode(np.frombuffer(secret.read(),  np.uint8), cv2.IMREAD_COLOR)
                 carrier_bgr = cv2.imdecode(np.frombuffer(carrier.read(), np.uint8), cv2.IMREAD_COLOR)
 
                 result = encrypt(
-                    secret_bgr, carrier_bgr, tiles_dir,
+                    secret_bgr, carrier_bgr, TILES_DIR,
                     tile_size=(int(tile_w), int(tile_h)),
                     # M=4, N=4（預設），三個 seed 不傳 → 自動產生
                     perm_seed=None, pixel_seed=None, atlas_seed=None,
@@ -64,7 +87,8 @@ with tab_enc:
                         "tile_size": result["key"]["tile_size"],
                         "mosaic_rows": result["key"]["mosaic_rows"],
                         "mosaic_cols": result["key"]["mosaic_cols"],
-                        "symbols": result["key"]["symbols"]
+                        "symbols": result["key"]["symbols"],
+                        "tiles_dir": TILES_DIR,
                     })
 
             except Exception as e:
