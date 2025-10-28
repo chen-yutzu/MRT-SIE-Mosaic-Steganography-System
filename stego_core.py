@@ -246,13 +246,10 @@ def encrypt(secret_bgr: np.ndarray, carrier_bgr: np.ndarray, tile_folder: str,
 
     return {"stego_bgr": stego_bgr, "mosaic_bgr": mosaic_bgr, "key": key}
 
-def save_stego_with_embedded_key(stego_bgr: np.ndarray, key: dict) -> bytes:
-    pil_img = Image.fromarray(cv2.cvtColor(stego_bgr, cv2.COLOR_BGR2RGB))
-    meta = PngImagePlugin.PngInfo()
-    meta.add_text("mrt_sie_key", json.dumps(key, ensure_ascii=False))
-    buf = io.BytesIO()
-    pil_img.save(buf, format="PNG", pnginfo=meta)
-    return buf.getvalue()
+def save_stego_no_metadata(stego_bgr: np.ndarray) -> bytes:
+    _, buf = cv2.imencode(".png", stego_bgr)
+    return buf.tobytes()
+
 
 def decrypt(stego_bytes: bytes, key_json: Optional[bytes] = None) -> bytes:
     pil = Image.open(io.BytesIO(stego_bytes))
