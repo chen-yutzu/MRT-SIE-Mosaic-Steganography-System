@@ -109,11 +109,11 @@ with tab_enc:
 
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("⬇ 下載嵌入圖（PNG，含金鑰）",
+            st.download_button("⬇ 下載嵌入圖（PNG）",
                                prev["stego_png"], file_name="stego.png",
                                mime="image/png", use_container_width=True)
         with c2:
-            st.download_button("⬇ 下載金鑰（JSON 備份）",
+            st.download_button("⬇ 下載金鑰（JSON）",
                                prev["key_json"], file_name="stego_key.json",
                                mime="application/json", use_container_width=True)
 
