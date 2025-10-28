@@ -123,8 +123,8 @@ with tab_enc:
 # ---------- 解密 ----------
 with tab_dec:
     st.subheader("上傳嵌入圖（PNG）")
-    stego = st.file_uploader("若 PNG metadata 無金鑰，可另外上傳金鑰 JSON", type=["png"], key="stego_png")
-    key_file = st.file_uploader("（選擇性）金鑰 JSON", type=["json"], key="key_json")
+    stego = st.file_uploader("搭配金鑰 JSON 解密", type=["png"], key="stego_png")
+    key_file = st.file_uploader(" 金鑰 JSON", type=["json"], key="key_json")
 
     if st.button("開始解密 ▶", use_container_width=True):
         if stego is None:
