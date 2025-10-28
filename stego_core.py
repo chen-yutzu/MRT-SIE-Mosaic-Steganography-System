@@ -1,283 +1,299 @@
 # stego_core.py
-import cv2, json, random, base64, os
-import numpy as np
+import io, json, math, random, base64
 from pathlib import Path
+from typing import List, Tuple, Optional
 
-# ===== 無損格式限制 =====
-LOSSLESS_EXT = {".png", ".tif", ".tiff", ".bmp"}
+import numpy as np
+import cv2
+from scipy.spatial import KDTree
+from PIL import Image, PngImagePlugin
 
-def _check_lossless(path: Path):
-    if path.suffix.lower() not in LOSSLESS_EXT:
-        raise ValueError(f"❌ 僅支援無損格式（PNG/TIFF/BMP），收到：{path.suffix}")
+# ---------- 影像/方塊處理 ----------
 
-# ===== 影像 <-> Base64 =====
-def _img_to_b64(img: np.ndarray) -> str:
-    ok, buf = cv2.imencode(".png", img)
-    if not ok:
-        raise RuntimeError("PNG 編碼失敗")
-    return base64.b64encode(buf).decode("utf-8")
+def _list_image_files(folder: Path) -> List[Path]:
+    exts = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
+    return sorted([p for p in folder.iterdir() if p.suffix.lower() in exts])
 
-def _b64_to_img(b64: str) -> np.ndarray:
-    data = base64.b64decode(b64)
-    arr = np.frombuffer(data, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise RuntimeError("Base64 影像解碼失敗")
-    return img
+def _rgb_to_lab(img_bgr: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
 
-# ===== MRT (M=4, N=4) 映射 =====
-def _id_to_coords_mrt(id_val: int, M: int, N: int, perm_seed: int):
-    total = M ** N
-    rng = random.Random(perm_seed)
-    perm = list(range(total))
-    rng.shuffle(perm)              # secret permutation
-    sym = perm[id_val % total]     # permuted symbol in [0, total)
-    coords = [0] * N
-    for i in range(N - 1, -1, -1):  # base-M digits
-        coords[i] = sym % M
-        sym //= M
-    return tuple(coords)            # 長度 N，每一位 0..M-1
+def _tile_feature_mean_lab(tile_bgr: np.ndarray) -> np.ndarray:
+    lab = _rgb_to_lab(tile_bgr)
+    return lab.reshape(-1, 3).mean(axis=0).astype(np.float32)
 
-# ===== Atlas：從素材資料夾生成（不可視） =====
-IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+def build_atlas_from_folder(tile_folder: str, tile_size: Tuple[int,int],
+                            seed: int = 0, keep_order: bool = False):
+    """讀素材庫→產生 Atlas png 與 tiles 陣列與 rows/cols"""
+    folder = Path(tile_folder)
+    files = _list_image_files(folder)
+    if not files:
+        raise FileNotFoundError(f"素材庫為空：{tile_folder}")
 
-def _list_imgs(folder: Path):
-    return sorted([p for p in folder.iterdir() if p.suffix.lower() in IMG_EXTS])
+    n = len(files)
+    side = int(math.sqrt(n))
+    if side * side == n:
+        rows = cols = side
+    else:
+        cols = int(math.ceil(math.sqrt(n)))
+        rows = int(math.ceil(n / cols))
 
-def _build_atlas_from_folder(tile_folder: Path, tile_size=(16,16), grid=16, seed=42, keep_order=False):
-    """
-    從素材資料夾讀圖 → resize 成固定 tile_size → 取前 grid*grid 張 → 拼成 Atlas (grid x grid)。
-    回傳：(atlas_img, rows, cols, tile_h, tile_w)
-    """
-    files = _list_imgs(tile_folder)
-    need = grid * grid
-    if len(files) < need:
-        raise ValueError(f"素材不足：需要至少 {need} 張，實際 {len(files)} 張（路徑：{tile_folder}）")
-
-    idxs = list(range(len(files)))
+    idxs = list(range(n))
     if not keep_order:
-        rng = random.Random(seed)
-        rng.shuffle(idxs)
-    idxs = idxs[:need]
+        random.Random(seed).shuffle(idxs)
 
     tw, th = tile_size
-    atlas = np.zeros((grid * th, grid * tw, 3), dtype=np.uint8)
-
-    for i, k in enumerate(idxs):
-        r, c = divmod(i, grid)
-        img = cv2.imread(str(files[k]), cv2.IMREAD_COLOR)
+    atlas = np.zeros((rows * th, cols * tw, 3), dtype=np.uint8)
+    tiles = []
+    mapping = []
+    for i, idx in enumerate(idxs):
+        r, c = divmod(i, cols)
+        img = cv2.imread(str(files[idx]), cv2.IMREAD_COLOR)
         if img is None:
-            raise FileNotFoundError(f"讀不到影像：{files[k]}")
+            raise ValueError(f"讀不到影像：{files[idx]}")
         img = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
         y0, y1 = r * th, (r + 1) * th
         x0, x1 = c * tw, (c + 1) * tw
         atlas[y0:y1, x0:x1] = img
+        tiles.append(img)
+        mapping.append({"id": i, "file": files[idx].name, "r": r, "c": c})
 
-    return atlas, grid, grid, th, tw
+    return atlas, tiles, rows, cols, mapping
 
-def _build_atlas_random(tile_size=(16,16), grid=16, seed=42):
-    rng = np.random.default_rng(seed)
-    th, tw = tile_size[1], tile_size[0]
-    atlas = rng.integers(0, 255, size=(grid * th, grid * tw, 3), dtype=np.uint8)
-    return atlas, grid, grid, th, tw
-
-# ===== 馬賽克索引：用 Atlas tiles 與秘密圖塊做最近色指派 =====
-def _bgr2lab_mean(img_bgr: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    return lab.reshape(-1, 3).mean(axis=0).astype(np.float32)
-
-def _split_blocks(img_bgr: np.ndarray, tile_w: int, tile_h: int):
+def split_image_into_blocks(img_bgr: np.ndarray, block_size: Tuple[int,int]) -> np.ndarray:
+    bw, bh = block_size
     H, W = img_bgr.shape[:2]
-    rows, cols = H // tile_h, W // tile_w
-    blocks = []
+    if (H % bh) or (W % bw):
+        # 自動修正成整數倍
+        W2 = (W // bw) * bw
+        H2 = (H // bh) * bh
+        img_bgr = cv2.resize(img_bgr, (W2, H2), interpolation=cv2.INTER_AREA)
+        H, W = H2, W2
+    rows, cols = H // bh, W // bw
+    blocks = np.zeros((rows, cols, bh, bw, 3), dtype=np.uint8)
     for r in range(rows):
         for c in range(cols):
-            y0, y1 = r * tile_h, (r + 1) * tile_h
-            x0, x1 = c * tile_w, (c + 1) * tile_w
-            blocks.append(img_bgr[y0:y1, x0:x1])
-    return blocks, rows, cols
+            y0, y1 = r*bh, (r+1)*bh
+            x0, x1 = c*bw, (c+1)*bw
+            blocks[r, c] = img_bgr[y0:y1, x0:x1]
+    return blocks
 
-def _tiles_from_atlas(atlas: np.ndarray, grid_r: int, grid_c: int, tile_h: int, tile_w: int):
-    tiles = []
-    for r in range(grid_r):
-        for c in range(grid_c):
-            y0, y1 = r * tile_h, (r + 1) * tile_h
-            x0, x1 = c * tile_w, (c + 1) * tile_w
-            tiles.append(atlas[y0:y1, x0:x1].copy())
-    return tiles  # 長度 grid_r*grid_c
+def assign_tiles_to_blocks(blocks: np.ndarray, tile_tree: KDTree) -> np.ndarray:
+    rows, cols = blocks.shape[:2]
+    idx_map = np.zeros((rows, cols), dtype=np.int32)
+    for r in range(rows):
+        for c in range(cols):
+            feat = _tile_feature_mean_lab(blocks[r, c])
+            _, idx = tile_tree.query(feat, k=1)
+            idx_map[r, c] = int(idx)
+    return idx_map
 
-def _mosaic_index_map(secret_img: np.ndarray, atlas: np.ndarray, tile_w: int, tile_h: int, grid: int):
-    # 切 atlas → 建 features
-    tiles = _tiles_from_atlas(atlas, grid, grid, tile_h, tile_w)
-    feats = np.vstack([_bgr2lab_mean(t) for t in tiles])  # (256, 3)
+def render_mosaic(idx_map: np.ndarray, tiles: List[np.ndarray], tile_size: Tuple[int,int]) -> np.ndarray:
+    tw, th = tile_size
+    rows, cols = idx_map.shape
+    out = np.zeros((rows*th, cols*tw, 3), dtype=np.uint8)
+    for r in range(rows):
+        for c in range(cols):
+            t = tiles[idx_map[r, c]]
+            if t.shape[1] != tw or t.shape[0] != th:
+                t = cv2.resize(t, (tw, th), interpolation=cv2.INTER_AREA)
+            y0, y1 = r*th, (r+1)*th
+            x0, x1 = c*tw, (c+1)*tw
+            out[y0:y1, x0:x1] = t
+    return out
 
-    # 秘密圖裁成整數塊
-    H, W = secret_img.shape[:2]
-    new_W = (W // tile_w) * tile_w
-    new_H = (H // tile_h) * tile_h
-    if new_W != W or new_H != H:
-        secret_img = cv2.resize(secret_img, (new_W, new_H), interpolation=cv2.INTER_AREA)
+def build_tile_feature_kdtree(tiles: List[np.ndarray]):
+    feats = np.vstack([_tile_feature_mean_lab(t) for t in tiles])
+    return KDTree(feats), feats
 
-    blocks, rows, cols = _split_blocks(secret_img, tile_w, tile_h)
+# ---------- MRT/SIE encode/decode（mod-M 於 Y 通道） ----------
 
-    # 逐塊配對（無 SciPy，純 numpy）
-    idx = np.empty(rows * cols, dtype=np.int32)
-    for i, blk in enumerate(blocks):
-        f = _bgr2lab_mean(blk)
-        d = np.sum((feats - f) ** 2, axis=1)  # (256,)
-        idx[i] = int(np.argmin(d))           # 0..255
-    return idx.reshape(rows, cols), rows, cols
+def _id_to_coords_mrt(id_val: int, M: int, N: int, perm_seed: int):
+    total = M ** N
+    rng = random.Random(perm_seed)
+    perm = list(range(total))
+    rng.shuffle(perm)
+    sym = perm[id_val % total]
+    coords = [0]*N
+    for i in range(N-1, -1, -1):
+        coords[i] = sym % M
+        sym //= M
+    return tuple(coords)
 
-# ===== Embed：只曝光「秘密圖 + 載體圖」；Atlas 內建不可視且進金鑰 =====
-def embed_mrt_sie(secret_img_path: str,
-                  carrier_img_path: str,
-                  out_stego_path: str,
-                  key_path: str,
-                  *,
-                  tile_size: int = 16,
-                  atlas_grid: int = 16,
-                  tile_folder: str | None = None,
-                  atlas_seed: int = 1234):
-    """
-    secret_img_path: 祕密圖片（僅用來生成 mosaic 索引，不會被寫進金鑰）
-    carrier_img_path: 載體（嵌入在 Y 通道）
-    out_stego_path: 輸出 stego 圖
-    key_path: 輸出金鑰（含 Base64 atlas 與所有必要參數）
-    tile_size: 每個 tile 的像素邊長（正方）
-    atlas_grid: Atlas 的格數（預設 16x16 → 256 tiles）
-    tile_folder: 系統內建素材資料夾（例如 "assets/tiles_256"）；若缺少或不足則改用隨機色塊 atlas
-    """
-    M, N = 4, 4
-    perm_seed = random.randint(0, 1_000_000_000)
-    pixel_seed = random.randint(0, 1_000_000_000)
-
-    # --- 載入圖檔 ---
-    _check_lossless(Path(carrier_img_path))
-    carrier = cv2.imread(carrier_img_path, cv2.IMREAD_COLOR)
-    if carrier is None:
-        raise FileNotFoundError("❌ 讀不到載體圖")
-
-    secret = cv2.imread(secret_img_path, cv2.IMREAD_COLOR)
-    if secret is None:
-        raise FileNotFoundError("❌ 讀不到祕密圖")
-
-    # --- 構建 Atlas（優先用素材資料夾；不足則隨機） ---
-    tile_h = tile_w = int(tile_size)
-    atlas = None
-    atlas_meta = {"source": "random", "grid": atlas_grid, "tile_size": tile_size}
-    if tile_folder:
-        folder = Path(tile_folder)
-        try:
-            atlas, ar, ac, th, tw = _build_atlas_from_folder(
-                folder, tile_size=(tile_w, tile_h), grid=atlas_grid, seed=atlas_seed, keep_order=False
-            )
-            atlas_meta["source"] = "folder"
-            atlas_meta["folder"] = str(folder)
-        except Exception as e:
-            # 退回隨機 Atlas
-            atlas, ar, ac, th, tw = _build_atlas_random(tile_size=(tile_w, tile_h), grid=atlas_grid, seed=atlas_seed)
-    else:
-        atlas, ar, ac, th, tw = _build_atlas_random(tile_size=(tile_w, tile_h), grid=atlas_grid, seed=atlas_seed)
-
-    # --- 以 Atlas 產生馬賽克索引（0..255） ---
-    idx_map, rows, cols = _mosaic_index_map(secret, atlas, tile_w, tile_h, atlas_grid)
-    index_flat = idx_map.reshape(-1)  # 長度 rows*cols
-
-    # --- 容量檢查（每個符號 → N 個像素） ---
-    H, W = carrier.shape[:2]
-    total_needed = len(index_flat) * N
-    total_pixels = H * W
-    if total_needed > total_pixels:
-        raise ValueError(f"❌ 容量不足：需要 {total_needed} 像素，載體只有 {total_pixels} 像素。"
-                         f"請選更大的載體或加大 tile_size 以降低符號數。")
-
-    # --- Y 通道嵌入（mod-M） ---
-    ycc = cv2.cvtColor(carrier, cv2.COLOR_BGR2YCrCb)
+def embed_mrt_sie_to_y(index_map_flat: List[int], carrier_bgr: np.ndarray,
+                       M: int, N: int, perm_seed: int,
+                       shuffle_pixels: bool = True, pixel_seed: int = 24680):
+    """回傳：stego_bgr, coords_stream（寫入 key 用）"""
+    ycc = cv2.cvtColor(carrier_bgr, cv2.COLOR_BGR2YCrCb)
     Y = ycc[:, :, 0].astype(np.int32)
+    H, W = Y.shape
+    total_pixels = H * W
+    need = len(index_map_flat) * N
+    if need > total_pixels:
+        raise ValueError(f"容量不足：需要 {need}，實際 {total_pixels}")
 
-    rng = random.Random(pixel_seed)
-    pos = list(range(total_pixels))
-    rng.shuffle(pos)
+    positions = list(range(total_pixels))
+    if shuffle_pixels:
+        rng = random.Random(pixel_seed)
+        rng.shuffle(positions)
 
-    wptr = 0
-    for tid in index_flat:
-        coords = _id_to_coords_mrt(int(tid), M, N, perm_seed)  # 長度 N，每位 0..M-1
+    coords_stream = []
+    p = 0
+    for tid in index_map_flat:
+        coords = _id_to_coords_mrt(tid, M, N, perm_seed)
         for a in coords:
-            p = pos[wptr]
-            y = int(Y.flat[p])
-            delta = (a - (y % M)) % M
+            pos = positions[p]
+            y = int(Y.flat[pos])
+            target = a % M
+            delta = (target - (y % M)) % M
             if delta > M // 2:
                 delta -= M
-            Y.flat[p] = np.clip(y + delta, 0, 255)
-            wptr += 1
+            Y.flat[pos] = np.clip(y + delta, 0, 255)
+            coords_stream.append(int(target))
+            p += 1
 
     ycc[:, :, 0] = Y.astype(np.uint8)
-    stego = cv2.cvtColor(ycc, cv2.COLOR_YCrCb2BGR)
-    cv2.imwrite(out_stego_path, stego)
+    stego_bgr = cv2.cvtColor(ycc, cv2.COLOR_YCrCb2BGR)
+    return stego_bgr, coords_stream
 
-    # --- 寫入金鑰（含 Base64 Atlas 與必要參數） ---
+def extract_coords_from_stego(stego_bgr: np.ndarray, M: int,
+                              shuffle_pixels: bool, pixel_seed: int) -> List[int]:
+    ycc = cv2.cvtColor(stego_bgr, cv2.COLOR_BGR2YCrCb)
+    Y = ycc[:, :, 0]
+    H, W = Y.shape
+    total = H * W
+    positions = list(range(total))
+    if shuffle_pixels:
+        rng = random.Random(pixel_seed)
+        rng.shuffle(positions)
+    coords = [int(Y.flat[pos]) % M for pos in positions]
+    return coords
+
+def decode_ids(coords_stream: List[int], M: int, N: int, perm_seed: int, symbols: int) -> List[int]:
+    total = M ** N
+    rng = random.Random(perm_seed)
+    perm = list(range(total))
+    rng.shuffle(perm)
+    inv_perm = {v: i for i, v in enumerate(perm)}
+    ids = []
+    for i in range(0, symbols * N, N):
+        val = 0
+        for x in coords_stream[i:i+N]:
+            val = val * M + x
+        ids.append(inv_perm.get(val, 0))
+    return ids
+
+# ---------- 封裝：加密 / 解密 ----------
+
+def encrypt(secret_bgr: np.ndarray, carrier_bgr: np.ndarray, tile_folder: str,
+            tile_size=(16,16), M=4, N=4, perm_seed=13579,
+            shuffle_pixels=True, pixel_seed=24680, atlas_seed=15, keep_order=False):
+    # 1) Atlas 與 tile features
+    atlas_bgr, tiles, a_rows, a_cols, mapping = build_atlas_from_folder(
+        tile_folder, tile_size, seed=atlas_seed, keep_order=keep_order
+    )
+    tree, _ = build_tile_feature_kdtree(tiles)
+
+    # 2) 秘密圖 → 分塊 → 比色選 tile → 生成 mosaic 與 index_map
+    blocks = split_image_into_blocks(secret_bgr, tile_size)
+    idx_map = assign_tiles_to_blocks(blocks, tree)
+    mosaic_bgr = render_mosaic(idx_map, tiles, tile_size)
+    index_map_flat = idx_map.reshape(-1).tolist()
+
+    # 3) MRT-SIE 嵌入到載體 Y 通道
+    stego_bgr, coords_stream = embed_mrt_sie_to_y(
+        index_map_flat, carrier_bgr, M, N, perm_seed, shuffle_pixels, pixel_seed
+    )
+
+    # 4) 準備金鑰（把 Atlas 也塞進去，解密時不需要外部檔案）
+    _, atlas_png_buf = cv2.imencode(".png", atlas_bgr)
+    atlas_b64 = base64.b64encode(atlas_png_buf.tobytes()).decode("ascii")
+
     key = {
+        "scheme": "MRT-SIE_modM_Y",
         "M": M, "N": N,
         "perm_seed": perm_seed,
+        "shuffle_pixels": shuffle_pixels,
         "pixel_seed": pixel_seed,
-        "mosaic_rows": int(rows),
-        "mosaic_cols": int(cols),
-        "tile_size": int(tile_size),
-        "atlas_grid": int(atlas_grid),
-        "atlas_meta": atlas_meta,
-        "atlas_base64": _img_to_b64(atlas),
+        "tile_size": list(tile_size),
+        "mosaic_rows": int(idx_map.shape[0]),
+        "mosaic_cols": int(idx_map.shape[1]),
+        "symbols": len(index_map_flat),
+        "coords_per_symbol": N,
+        "index_map_len": len(index_map_flat),  # 供驗證
+        "atlas": {
+            "rows": a_rows,
+            "cols": a_cols,
+            "seed": atlas_seed,
+            "keep_order": keep_order,
+            "png_base64": atlas_b64
+        }
     }
-    Path(key_path).write_text(json.dumps(key, indent=2, ensure_ascii=False), encoding="utf-8")
-    return out_stego_path, key_path
 
-# ===== Extract：用 stego 圖 + 金鑰 → 重建馬賽克圖 =====
-def extract_mrt_sie(stego_img_path: str, key_path: str, out_mosaic_path: str = "decoded_mosaic.png"):
-    key = json.loads(Path(key_path).read_text(encoding="utf-8"))
-    M, N = int(key["M"]), int(key["N"])
-    perm_seed, pixel_seed = int(key["perm_seed"]), int(key["pixel_seed"])
-    rows, cols = int(key["mosaic_rows"]), int(key["mosaic_cols"])
-    atlas_grid = int(key.get("atlas_grid", 16))
-    tile_size = int(key.get("tile_size", 16))
+    return {
+        "stego_bgr": stego_bgr,
+        "mosaic_bgr": mosaic_bgr,
+        "key": key
+    }
 
-    _check_lossless(Path(stego_img_path))
-    bgr = cv2.imread(stego_img_path, cv2.IMREAD_COLOR)
-    if bgr is None:
-        raise FileNotFoundError("❌ 讀不到嵌入圖")
-    ycc = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
-    Y = ycc[:, :, 0].astype(np.int32)
+def save_stego_with_embedded_key(stego_bgr: np.ndarray, key: dict) -> bytes:
+    """將 key 以 PNG tEXt 寫入 'mrt_sie_key'，回傳檔案位元組。"""
+    pil_img = Image.fromarray(cv2.cvtColor(stego_bgr, cv2.COLOR_BGR2RGB))
+    meta = PngImagePlugin.PngInfo()
+    meta.add_text("mrt_sie_key", json.dumps(key, ensure_ascii=False))
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG", pnginfo=meta)
+    return buf.getvalue()
 
-    H, W = Y.shape
-    tot = H * W
-    rng = random.Random(pixel_seed)
-    pos = list(range(tot))
-    rng.shuffle(pos)
+def decrypt(stego_bytes: bytes, key_json: Optional[bytes] = None):
+    """優先從 PNG metadata 讀 key；若沒有，再用外部 key_json。"""
+    # 1) 載入 PNG 與 key
+    pil = Image.open(io.BytesIO(stego_bytes))
+    key_text = None
+    if isinstance(pil.info, dict):
+        key_text = pil.info.get("mrt_sie_key")
+    if (not key_text) and key_json:
+        key_text = key_json.decode("utf-8")
+    if not key_text:
+        raise ValueError("找不到金鑰：PNG metadata 無 'mrt_sie_key'，也未提供金鑰檔。")
 
-    # 還原座標流
-    coords = [int(Y.flat[p] % M) for p in pos]
-    # 轉回 id（以 base-M 讀回，NOTE: 這裡未做逆置換，與嵌入一致使用 perm 對應）
-    ids = []
-    for i in range(0, len(coords), N):
-        seg = coords[i:i + N]
-        if len(seg) < N: break
-        v = 0
-        for a in seg:
-            v = v * M + a
-        ids.append(int(v))
-    ids = np.array(ids[:rows * cols], dtype=np.int32)  # 截斷至 mosaic 尺寸
+    key = json.loads(key_text)
 
-    # 還原 Atlas
-    atlas = _b64_to_img(key["atlas_base64"])
-    th = tw = tile_size
-    tiles = _tiles_from_atlas(atlas, atlas_grid, atlas_grid, th, tw)
+    # 2) 還原 stego BGR & 取座標流
+    stego_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    coords_stream = extract_coords_from_stego(
+        stego_bgr, M=key["M"], shuffle_pixels=key["shuffle_pixels"], pixel_seed=key["pixel_seed"]
+    )
 
-    # 重建 mosaic
-    out = np.zeros((rows * th, cols * tw, 3), dtype=np.uint8)
-    for r in range(rows):
-        for c in range(cols):
-            tid = int(ids[r * cols + c]) % len(tiles)
-            y0, y1 = r * th, (r + 1) * th
-            x0, x1 = c * tw, (c + 1) * tw
-            out[y0:y1, x0:x1] = tiles[tid]
+    # 限制長度：只取真正嵌入的 symbols*N
+    coords_stream = coords_stream[: key["symbols"] * key["coords_per_symbol"]]
 
-    cv2.imwrite(out_mosaic_path, out)
-    return out
+    # 3) 解出 tile IDs
+    ids = decode_ids(coords_stream, M=key["M"], N=key["N"], perm_seed=key["perm_seed"], symbols=key["symbols"])
+
+    # 4) 還原 Atlas 與 Mosaic
+    atlas_png = base64.b64decode(key["atlas"]["png_base64"])
+    atlas_np = cv2.imdecode(np.frombuffer(atlas_png, np.uint8), cv2.IMREAD_COLOR)
+    tw, th = key["tile_size"]
+    rows, cols = key["mosaic_rows"], key["mosaic_cols"]
+
+    # 切 atlas 成 tiles
+    tiles = []
+    a_rows, a_cols = key["atlas"]["rows"], key["atlas"]["cols"]
+    for r in range(a_rows):
+        for c in range(a_cols):
+            y0, y1 = r*th, (r+1)*th
+            x0, x1 = c*tw, (c+1)*tw
+            tiles.append(atlas_np[y0:y1, x0:x1])
+
+    # 拼回 mosaic
+    ids = np.array(ids[: rows*cols], dtype=np.int32) % len(tiles)
+    mosaic = np.zeros((rows*th, cols*tw, 3), np.uint8)
+    for i, tid in enumerate(ids):
+        r, c = divmod(i, cols)
+        mosaic[r*th:(r+1)*th, c*tw:(c+1)*tw] = tiles[tid]
+
+    # 匯出 PNG bytes
+    ok, mosaic_png = cv2.imencode(".png", mosaic)
+    if not ok:
+        raise RuntimeError("輸出 Mosaic 失敗")
+    return mosaic_png.tobytes()
