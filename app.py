@@ -71,8 +71,11 @@ with tab_enc:
                     shuffle_pixels=True, keep_order=False
                 )
 
-                stego_png_bytes = save_stego_with_embedded_key(result["stego_bgr"], result["key"])
+                from stego_core import save_stego_no_metadata
+
+                stego_png_bytes = save_stego_no_metadata(result["stego_bgr"])
                 key_json_bytes  = json.dumps(result["key"], ensure_ascii=False, indent=2).encode("utf-8")
+
 
                 # ✅ 存入 session，避免 rerun 後消失
                 st.session_state.enc_result = {
