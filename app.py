@@ -1,80 +1,79 @@
 # app.py
 import streamlit as st
 import numpy as np
-import cv2, tempfile, json, os
-from pathlib import Path
-from stego_core import embed_mrt_sie, extract_mrt_sie
+import cv2
+from stego_core import encrypt, save_stego_with_embedded_key, decrypt
 
-st.set_page_config(page_title="MRT-SIE Mosaic Steganography", layout="wide")
-st.title("🧩 MRT-SIE Mosaic Steganography System")
+st.set_page_config(page_title="Mosaic + MRT-SIE", layout="wide")
 
-# 系統內建素材資料夾（請把 256 張素材放到 assets/tiles_256/）
-DEFAULT_TILE_FOLDER = "assets/tiles_256"   # 不顯示給使用者
-
-tab1, tab2 = st.tabs(["🔐 加密 Embed", "🔓 解密 Extract"])
+st.title("🧩 Mosaic Stego（MRT-SIE）")
+tab_enc, tab_dec = st.tabs(["🔐 加密 / Embed", "🔓 解密 / Decode"])
 
 # ---------- 加密 ----------
-with tab1:
-    st.subheader("上傳：祕密圖片 + 載體圖片（無損）")
-    secret = st.file_uploader("祕密圖片（PNG/TIFF/BMP）", type=["png","tif","tiff","bmp"])
-    carrier = st.file_uploader("載體圖片（PNG/TIFF/BMP）", type=["png","tif","tiff","bmp"])
+with tab_enc:
+    st.subheader("上傳檔案")
+    secret = st.file_uploader("祕密圖（會被轉成馬賽克索引）", type=["png","jpg","jpeg","bmp","tiff"])
+    carrier = st.file_uploader("載體圖（嵌入後看起來幾乎相同）", type=["png","jpg","jpeg","bmp","tiff"])
 
-    tile_size = st.slider("馬賽克 tile 邊長", 8, 64, 16, 8)
-    atlas_grid = 16  # 固定 16x16 → 256 tiles（與素材數量相符）
+    st.divider()
+    st.subheader("參數")
+    c1, c2, c3, c4 = st.columns(4)
+    tile_w = c1.number_input("Tile 寬", 4, 256, 16, step=4)
+    tile_h = c2.number_input("Tile 高", 4, 256, 16, step=4)
+    M = c3.number_input("M（mod基數）", 2, 16, 4)
+    N = c4.number_input("N（維度）", 1, 8, 4)
+    perm_seed = st.number_input("perm_seed（SIE 置換）", value=13579)
+    pixel_seed = st.number_input("pixel_seed（像素洗牌）", value=24680)
+    shuffle_pixels = st.checkbox("打亂像素順序", value=True)
+    atlas_seed = st.number_input("atlas_seed（素材洗牌）", value=15)
+    keep_order = st.checkbox("Atlas 按檔名順序", value=False)
 
-    if st.button("▶️ 執行加密", type="primary", use_container_width=True):
-        if not (secret and carrier):
-            st.warning("請同時上傳祕密圖與載體圖")
-        else:
-            with tempfile.TemporaryDirectory() as tmp:
-                # 寫入暫存檔
-                secret_path  = f"{tmp}/secret.png"
-                carrier_path = f"{tmp}/carrier.png"
-                cv2.imwrite(secret_path,  cv2.imdecode(np.frombuffer(secret.read(),  np.uint8), 1))
-                cv2.imwrite(carrier_path, cv2.imdecode(np.frombuffer(carrier.read(), np.uint8), 1))
+    tiles_dir = st.text_input("素材方塊資料夾", value="assets/tiles_256")
 
-                stego_path = f"{tmp}/stego.png"
-                key_path   = f"{tmp}/stego_key.json"
+    if st.button("開始加密▶"):
+        try:
+            secret_bgr = cv2.imdecode(np.frombuffer(secret.read(), np.uint8), cv2.IMREAD_COLOR)
+            carrier_bgr = cv2.imdecode(np.frombuffer(carrier.read(), np.uint8), cv2.IMREAD_COLOR)
 
-                # 重要：Atlas 由系統內建資料夾生成，不給使用者選
-                try:
-                    embed_mrt_sie(secret_path, carrier_path, stego_path, key_path,
-                                  tile_size=tile_size,
-                                  atlas_grid=atlas_grid,
-                                  tile_folder=DEFAULT_TILE_FOLDER,
-                                  atlas_seed=13579)
-                    st.success("✅ 嵌入完成！Atlas 已以 Base64 形式包含在金鑰檔。")
-                except Exception as e:
-                    st.error(f"❌ 加密失敗：{e}")
-                else:
-                    colA, colB = st.columns(2)
-                    with colA:
-                        with open(stego_path, "rb") as f:
-                            st.download_button("⬇️ 下載嵌入後圖片", f, "stego.png", use_container_width=True)
-                    with colB:
-                        with open(key_path, "rb") as f:
-                            st.download_button("🗝️ 下載金鑰檔（含 Atlas）", f, "stego_key.json", use_container_width=True)
+            result = encrypt(
+                secret_bgr, carrier_bgr, tiles_dir,
+                tile_size=(tile_w, tile_h), M=M, N=N, perm_seed=perm_seed,
+                shuffle_pixels=shuffle_pixels, pixel_seed=pixel_seed,
+                atlas_seed=atlas_seed, keep_order=keep_order
+            )
+
+            # 內嵌金鑰的 stego PNG
+            stego_png_bytes = save_stego_with_embedded_key(result["stego_bgr"], result["key"])
+            key_json_bytes = bytes(
+                json_dumps := __import__("json").dumps(result["key"], ensure_ascii=False, indent=2),
+                "utf-8"
+            )
+            # 預覽
+            st.success("加密完成！下方提供下載。")
+            st.image(cv2.cvtColor(result["mosaic_bgr"], cv2.COLOR_BGR2RGB), caption="加密用馬賽克圖（預覽）", use_column_width=True)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button("⬇ 下載嵌入圖（PNG，含金鑰）", stego_png_bytes, file_name="stego.png", mime="image/png")
+            with c2:
+                st.download_button("⬇ 下載金鑰（JSON）", key_json_bytes, file_name="stego_key.json", mime="application/json")
+        except Exception as e:
+            st.error(f"加密失敗：{e}")
 
 # ---------- 解密 ----------
-with tab2:
-    st.subheader("上傳：嵌入後圖片 + 金鑰 JSON")
-    stego = st.file_uploader("嵌入後圖片（PNG/TIFF/BMP）", type=["png","tif","tiff","bmp"])
-    key   = st.file_uploader("金鑰檔（JSON）", type=["json"])
+with tab_dec:
+    st.subheader("上傳嵌入圖（PNG）")
+    stego = st.file_uploader("若 PNG 內無金鑰，可另外上傳金鑰 JSON", type=["png"], key="stego")
+    key_file = st.file_uploader("（選擇性）金鑰 JSON", type=["json"], key="key")
 
-    if st.button("▶️ 執行解密", type="primary", use_container_width=True):
-        if not (stego and key):
-            st.warning("請同時上傳嵌入圖與金鑰檔")
-        else:
-            with tempfile.TemporaryDirectory() as tmp:
-                stego_path = f"{tmp}/stego.png"
-                key_path   = f"{tmp}/key.json"
-                cv2.imwrite(stego_path, cv2.imdecode(np.frombuffer(stego.read(), np.uint8), 1))
-                Path(key_path).write_text(key.getvalue().decode("utf-8"), encoding="utf-8")
-
-                try:
-                    mosaic = extract_mrt_sie(stego_path, key_path, f"{tmp}/decoded.png")
-                    st.image(mosaic, caption="解密後的馬賽克圖", use_container_width=True)
-                    with open(f"{tmp}/decoded.png", "rb") as f:
-                        st.download_button("⬇️ 下載解密後馬賽克圖", f, "decoded_mosaic.png", use_container_width=True)
-                except Exception as e:
-                    st.error(f"❌ 解密失敗：{e}")
+    if st.button("開始解密▶"):
+        try:
+            stego_bytes = stego.read()
+            key_bytes = key_file.read() if key_file else None
+            mosaic_png = decrypt(stego_bytes, key_json=key_bytes)
+            st.success("解密完成！")
+            st.image(cv2.imdecode(np.frombuffer(mosaic_png, np.uint8), cv2.IMREAD_COLOR)[:, :, ::-1],
+                     caption="還原的馬賽克加密圖", use_column_width=True)
+            st.download_button("⬇ 下載還原馬賽克（PNG）", mosaic_png, file_name="decoded_mosaic.png", mime="image/png")
+        except Exception as e:
+            st.error(f"解密失敗：{e}")
