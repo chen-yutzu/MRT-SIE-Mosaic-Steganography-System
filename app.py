@@ -240,10 +240,12 @@ if mode == "🧩 加密（嵌入）":
                 use_container_width=True
             )
 
+        # 加密頁的重置鈕
         if st.button("🔁 重新開始", type="secondary", use_container_width=True):
             for k in ["enc_ready", "enc_img_bytes", "enc_key_bytes", "preview_png"]:
                 st.session_state[k] = None
-            st.experimental_rerun()
+            st.rerun()   # ← 改這行（原本是 st.experimental_rerun()）
+
 
 # ============= 解密頁 =============
 if mode == "🔍 解密（提取）":
@@ -305,7 +307,9 @@ if mode == "🔍 解密（提取）":
             use_container_width=True
         )
 
+        # 解密頁的重置鈕
         if st.button("🔁 重新開始", type="secondary", use_container_width=True):
             for k in ["dec_ready", "dec_png_bytes"]:
                 st.session_state[k] = None
-            st.experimental_rerun()
+            st.rerun()   # ← 改這行（原本是 st.experimental_rerun()）
+
