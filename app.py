@@ -52,7 +52,6 @@ with tab_enc:
 
     if clear_btn:
         st.session_state.enc_result = None
-        st.rerun()
 
     if start_btn:
         if (secret is None) or (carrier is None):
@@ -105,7 +104,7 @@ with tab_enc:
     if st.session_state.enc_result:
         prev = st.session_state.enc_result
         st.image(cv2.cvtColor(prev["mosaic_preview_bgr"], cv2.COLOR_BGR2RGB),
-                 caption="加密用馬賽克圖（預覽）", use_column_width=True)
+                 caption="加密用馬賽克圖（預覽）", use_container_width=True)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -137,7 +136,7 @@ with tab_dec:
 
                 st.success("解密完成！")
                 st.image(cv2.imdecode(np.frombuffer(mosaic_png, np.uint8), cv2.IMREAD_COLOR)[:, :, ::-1],
-                         caption="還原的馬賽克加密圖（PNG 無損）", use_column_width=True)
+                         caption="還原的馬賽克加密圖（PNG 無損）", use_container_width=True)
                 st.download_button("⬇ 下載還原馬賽克（PNG）",
                                    mosaic_png, file_name="decoded_mosaic.png",
                                    mime="image/png", use_container_width=True)
