@@ -1,30 +1,35 @@
 # MRT-SIE Mosaic Steganography System
 
-This project implements a mosaic-index image steganography workflow.
+This project implements an image steganography workflow based on mosaic tile-index representation and MRT-SIE embedding.
 
-The main idea is:
+The core research idea is:
 
 ```text
-Secret image
--> Mosaic tile-index representation
--> MRT-SIE embedding
--> Stego image
--> MRT-SIE extraction
--> Decoded mosaic image
+Secret Image
+-> Mosaic Tile-Index Representation
+-> MRT-SIE Embedding
+-> Stego Image
+-> MRT-SIE Extraction
+-> Decoded Mosaic Image
 ```
 
-In this research, the secret image is not embedded directly. It is first converted into a tile index sequence. The index sequence can only be interpreted with the correct tile library and parameters.
+In this system, the secret image is not embedded directly into the carrier image. The secret image is first converted into a mosaic representation. Each block of the secret image is represented by the index of a matched tile from a predefined tile library. The resulting tile-index sequence is then embedded into a carrier image by using MRT-SIE.
+
+Therefore, the main contribution of this research is the mosaic-based secret representation layer. MRT-SIE is used as the embedding method for implementing and testing the proposed representation.
 
 ## Project Structure
 
 ```text
 .
-├── mosaic_collage_converter.py   # Secret image -> mosaic image + index JSON
-├── mrt_sie_embedder.py           # Index JSON + carrier image -> stego image + key JSON
-├── mrt_sie_decoder.py            # Stego image + key JSON + tile library -> decoded mosaic
-├── requirements.txt              # Python packages
-├── .gitignore
-└── README.md
+|-- app.py                         # Streamlit web interface
+|-- stego_core.py                  # Shared mosaic and steganography functions
+|-- mosaic_collage_converter.py    # Secret image -> mosaic image + index JSON
+|-- mrt_sie_embedder.py            # Index JSON + carrier image -> stego image + key JSON
+|-- mrt_sie_decoder.py             # Stego image + key JSON + tile library -> decoded mosaic
+|-- assets/
+|   `-- tiles_256/                 # Tile library used for mosaic representation
+|-- requirements.txt               # Python packages
+`-- README.md
 ```
 
 ## Installation
@@ -35,37 +40,34 @@ Use Python 3.10 or newer.
 pip install -r requirements.txt
 ```
 
-## Required Input Data
+## Run the Web Interface
 
-Prepare:
-
-```text
-secret image      example: data/secret/Splash.jpg
-carrier image     example: data/carrier/Lena.jpg
-tile library      example: data/tiles_256/
+```bash
+streamlit run app.py
 ```
 
-The tile library should contain image files such as:
+The web interface provides a simple way to test the full workflow:
 
-```text
-000001.jpg
-000002.jpg
-...
-000256.jpg
-```
+1. Upload a secret image.
+2. Select or use the prepared tile library.
+3. Generate the mosaic tile-index representation.
+4. Embed the index data into a carrier image.
+5. Decode the stego image and reconstruct the mosaic representation.
 
-## Step 1: Convert Secret Image to Mosaic Index Code
+## Command-Line Usage
+
+### Step 1: Convert Secret Image to Mosaic Representation
 
 ```bash
 python mosaic_collage_converter.py ^
   --secret data/secret/Splash.jpg ^
-  --tiles data/tiles_256 ^
+  --tiles assets/tiles_256 ^
   --out outputs/mosaic ^
   --block-size 16 ^
   --tile-seed 15
 ```
 
-Outputs:
+Main outputs:
 
 ```text
 Splash_cropped.png
@@ -74,19 +76,9 @@ Splash_mosaic_index_b16.json
 tile_atlas_b16.png
 ```
 
-The most important file is:
+The JSON file stores the tile-index sequence. It records which tile is used for each block of the secret image.
 
-```text
-Splash_mosaic_index_b16.json
-```
-
-It contains the tile index sequence:
-
-```text
-index_map_flat = [t1, t2, ..., tn]
-```
-
-## Step 2: Embed Index Code with MRT-SIE
+### Step 2: Embed the Tile-Index Sequence
 
 ```bash
 python mrt_sie_embedder.py ^
@@ -99,85 +91,50 @@ python mrt_sie_embedder.py ^
   --pixel-seed 24680
 ```
 
-Outputs:
+Main outputs:
 
 ```text
 Lena_stego_M4_N4.png
 Lena_embedding_key_M4_N4.json
 ```
 
-When `M=4` and `N=4`, MRT-SIE can represent:
+The stego image contains the embedded index data. The key JSON stores the parameters required for extraction.
 
-```text
-M^N = 4^4 = 256 symbols
-```
-
-This matches a 256-image tile library.
-
-## Step 3: Decode Stego Image
+### Step 3: Decode and Reconstruct the Mosaic Image
 
 ```bash
 python mrt_sie_decoder.py ^
   --stego outputs/stego/Lena_stego_M4_N4.png ^
   --key outputs/stego/Lena_embedding_key_M4_N4.json ^
-  --tiles data/tiles_256 ^
+  --tiles assets/tiles_256 ^
   --out outputs/decoded/decoded_mosaic.png
 ```
 
-The decoder extracts the tile index sequence from the stego image and reconstructs the mosaic image with the correct tile library.
-
-## Important Concepts
-
-### Mosaic Index Representation
-
-Each secret image block is matched to the closest tile image by Lab mean color:
+To reconstruct the hidden mosaic image, the receiver needs:
 
 ```text
-F(B_i) = [mean_L(B_i), mean_a(B_i), mean_b(B_i)]
+stego image
+embedding key JSON
+same tile library and tile order
 ```
-
-Tile selection:
-
-```text
-t_i = argmin_j || F(B_i) - F(T_j) ||_2
-```
-
-Where:
-
-```text
-B_i = secret image block
-T_j = tile image
-t_i = selected tile index
-```
-
-### MRT-SIE Embedding
-
-Each tile index is converted into MRT-SIE coordinates.
-
-Example:
-
-```text
-tile index 173 -> [2, 3, 0, 1]
-```
-
-The coordinate values are embedded into the carrier image Y channel by modulo adjustment.
-
-### Recovery Conditions
-
-To decode correctly, the receiver needs:
-
-```text
-1. stego image
-2. MRT-SIE key JSON
-3. correct tile library
-4. correct tile order / tile seed
-```
-
-Without these conditions, the extracted code cannot be correctly interpreted as a mosaic image.
 
 ## Research Position
 
-This project focuses on using mosaic collage as an index representation layer for image steganography.
+Traditional image hiding methods often focus on the embedding algorithm itself. This project emphasizes the representation of the secret image before embedding.
 
-MRT-SIE is used as the embedding layer. The main research contribution is not improving MRT-SIE itself, but converting a secret image into a tile-index code before embedding.
+The secret image is transformed into a mosaic tile-index sequence. Even if the embedded data is extracted, the data is not the original image pixels. It must be interpreted with the correct tile library and reconstruction parameters.
 
+This design separates the system into two layers:
+
+```text
+Representation Layer: Secret image -> mosaic tile-index sequence
+Embedding Layer: Tile-index sequence -> stego image by MRT-SIE
+```
+
+Because these two layers are separated, the mosaic representation can also be tested with other embedding methods in future work.
+
+## Notes
+
+- The tile library should remain fixed during encoding and decoding.
+- Changing tile order, block size, or seed values will affect reconstruction.
+- MRT-SIE is used here as the embedding method, while the research focus is the mosaic tile-index representation.
