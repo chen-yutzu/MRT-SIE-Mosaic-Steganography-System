@@ -52,7 +52,7 @@ with tab_enc:
 
     if clear_btn:
         st.session_state.enc_result = None
-        st.experimental_rerun()
+        st.rerun()
 
     if start_btn:
         if (secret is None) or (carrier is None):
